@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background-color: #ffffff;
+}
+
+html,
+body,
+body > div {
+  background-color: var(--background-color);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  color: black;
+}
+
+#__next {
+  background-color: var(--background-color);
+}
+
+.card-override {
+  background-color: white !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+}
+
+.input-override {
+  background-color: white !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+  color: black !important;
+}
+
+.input-override::placeholder {
+  color: rgba(0, 0, 0, 0.5) !important;
+}
+
+.status-pass {
+  background-color: rgba(34, 197, 94, 0.1) !important;
+}
+
+.status-fail {
+  background-color: rgba(239, 68, 68, 0.1) !important;
+}
+
+.status-error {
+  background-color: rgba(249, 115, 22, 0.1) !important;
+}
+
+.tooltip {
+  position: relative;
+  display: inline-block;
+  cursor: help;
+}
+
+.tooltip .tooltip-text {
+  visibility: hidden;
+  width: 200px;
+  background-color: white;
+  color: black;
+  text-align: left;
+  border-radius: 6px;
+  padding: 8px;
+  position: absolute;
+  z-index: 1;
+  bottom: 125%;
+  left: 50%;
+  margin-left: -100px;
+  opacity: 0;
+  transition: opacity 0.3s;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  font-size: 0.8rem;
+}
+
+.tooltip:hover .tooltip-text {
+  visibility: visible;
+  opacity: 1;
+}
+
+.button-override {
+  background-color: #eab308 !important;
+  color: #0a192f !important;
+  font-weight: 600 !important;
+}
+
+.button-override:hover {
+  background-color: #ca8a04 !important;
+}
