@@ -4,7 +4,7 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 
 const { useState } = React;
-import { type SupabaseCredentials } from '@/lib/supabase';
+import { type SupabaseCredentials } from '@/types';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
@@ -70,8 +70,8 @@ export default function LoginPage() {
     return '';
   };
 
-  const handleInputChange = (field: string, value: string) => {
-    setCredentials(prev => ({ ...prev, [field]: value }));
+  const handleInputChange = (field: keyof SupabaseCredentials, value: string) => {
+    setCredentials((prev: SupabaseCredentials) => ({ ...prev, [field]: value }));
     setValidationErrors(prev => ({
       ...prev,
       [field]: validateField(field, value)
@@ -92,10 +92,7 @@ export default function LoginPage() {
       setError('Invalid Service Role Key. Must start with "eyJ"');
       return false;
     }
-    if (!credentials.managementApiKey.startsWith('sbp_')) {
-      setError('Invalid Management API Key. Must start with "sbp_"');
-      return false;
-    }
+    // Management API key will be entered later in the dashboard
     setError('');
     return true;
   };
@@ -173,37 +170,12 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {/* Management API Key Input */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-black">Management API Key</label>
-                <Button
-                  type="button"
-                  variant={showKeys.managementApiKey ? "outline" : "default"}
-                  size="sm"
-                  className={`h-6 px-2 py-0 text-xs ${showKeys.managementApiKey 
-                    ? 'border-black text-black' 
-                    : 'bg-black text-white hover:bg-gray-800'}`}
-                  onClick={() => toggleKeyVisibility('managementApiKey')}
-                >
-                  {showKeys.managementApiKey ? 'Hide' : 'Unhide'}
-                </Button>
-              </div>
-              <div className="relative">
-                <Input
-                  className="w-full border-black text-black"
-                  type={showKeys.managementApiKey ? 'text' : 'password'}
-                  value={credentials.managementApiKey}
-                  onChange={(e) => handleInputChange('managementApiKey', e.target.value)}
-                  placeholder="sbp_..."
-                />
-              </div>
-            </div>
+            {/* Management API Key input removed - will be added in Dashboard */}
 
             <Button
               className="w-full mt-4 bg-black text-white hover:bg-gray-800"
               onClick={handleLogin}
-              disabled={loading || !credentials.url || !credentials.serviceRoleKey || !credentials.managementApiKey}
+              disabled={loading || !credentials.url || !credentials.serviceRoleKey}
             >
               {loading ? 'Logging in...' : 'Login'}
             </Button>
@@ -218,7 +190,7 @@ export default function LoginPage() {
                 <>
                   ERROR - {validationErrors.url && 'Project URL is incorrect. '}
                   {validationErrors.serviceRoleKey && 'Service Role Key is incorrect. '}
-                  {validationErrors.managementApiKey && 'Management API Key is incorrect.'}
+                  {/* Management API Key validation removed */}
                 </>
               )}
             </AlertDescription>

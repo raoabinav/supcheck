@@ -16,6 +16,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { HelpCircle } from 'lucide-react';
 import EntityList from './EntityList';
 import {
@@ -45,7 +46,7 @@ const INITIAL_RESULTS: Results = {
 
 export default function Dashboard() {
   const router = useRouter();
-  const { credentials, clearCredentials } = useCredentials();
+  const { credentials, clearCredentials, setCredentials } = useCredentials();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [results, setResults] = useState<Results>(INITIAL_RESULTS);
@@ -67,11 +68,126 @@ export default function Dashboard() {
     evidenceLog: true,
     checks: true
   });
+  
+  // State for showing/hiding sensitive credentials
+  const [showServiceRoleKey, setShowServiceRoleKey] = useState(false);
+  
+  // State for management API key input
+  const [managementApiKey, setManagementApiKey] = useState('');
+  const [managementApiKeyError, setManagementApiKeyError] = useState('');
+  const [showManagementApiKey, setShowManagementApiKey] = useState(false);
+  
+  // State for OpenAI API key input
+  const [openAIApiKey, setOpenAIApiKey] = useState('');
+  const [openAIApiKeyError, setOpenAIApiKeyError] = useState('');
+  const [showOpenAIApiKey, setShowOpenAIApiKey] = useState(false);
+  const [openAIApiKeySaved, setOpenAIApiKeySaved] = useState(false);
+
+  const validateManagementApiKey = (key: string): boolean => {
+    if (!key) {
+      setManagementApiKeyError('Management API Key is required');
+      return false;
+    }
+    if (!key.startsWith('sbp_')) {
+      setManagementApiKeyError('Management API Key must start with "sbp_"');
+      return false;
+    }
+    setManagementApiKeyError('');
+    return true;
+  };
+
+  const saveManagementApiKey = () => {
+    if (!validateManagementApiKey(managementApiKey)) return;
+    
+    // Update credentials in context
+    if (credentials) {
+      const updatedCredentials = {
+        ...credentials,
+        managementApiKey
+      };
+      // Update credentials in context
+      setCredentials(updatedCredentials); // Set updated credentials with management API key
+    }
+  };
+
+  const handleRunChecks = async () => {
+    if (!credentials) {
+      setError('No valid credentials found. Please log in again.');
+      return;
+    }
+    
+    // Validate management API key before running checks
+    if (!validateManagementApiKey(managementApiKey)) {
+      setError('Please enter a valid Management API Key before running checks');
+      return;
+    }
+    
+    try {
+      setLoading(true);
+      setError('');
+      setEvidence([]);
+      setSuggestedFixes([]);
+      
+      // Create Supabase client with updated credentials including management API key
+      const supabaseCredentials = {
+        ...credentials,
+        managementApiKey
+      };
+      const supabase = createSupabaseClient(supabaseCredentials);
+      
+      const createErrorResult = (e: Error): CheckResult => ({
+        status: 'error',
+        message: e.message,
+        details: {
+          message: e.message,
+          stack: e.stack || '',
+          name: e.name
+        } as JSONValue
+      });
+
+      const [mfaResult, rlsResult, pitrResult] = await Promise.all([
+        checkMFA(supabase).catch((e: Error) => createErrorResult(e)),
+        checkRLS(supabase).catch((e: Error) => createErrorResult(e)),
+        checkPITR(supabaseCredentials).catch((e: Error) => createErrorResult(e)),
+      ]);
+
+      const timestamp = new Date().toISOString();
+      setEvidence(prev => [
+        ...prev,
+        { timestamp, check: 'MFA', status: mfaResult.status, details: mfaResult.message },
+        { timestamp, check: 'RLS', status: rlsResult.status, details: rlsResult.message },
+        { timestamp, check: 'PITR', status: pitrResult.status, details: pitrResult.message },
+      ]);
+      setResults({ mfa: mfaResult, rls: rlsResult, pitr: pitrResult });
+    } catch (error) {
+      console.error('Error running checks:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      setError(`Failed to run checks: ${errorMessage}`);
+      
+      // Add the error to evidence log for visibility
+      const timestamp = new Date().toISOString();
+      setEvidence(prev => [
+        ...prev,
+        { timestamp, check: 'System', status: 'error', details: `Error: ${errorMessage}` },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Redirect to login if no credentials found
   useEffect(() => {
     if (!credentials) {
       router.push('/');
+    } else if (credentials.managementApiKey) {
+      // If we already have a management API key (from previous session), use it
+      setManagementApiKey(credentials.managementApiKey);
+    }
+    
+    // Load OpenAI API key from localStorage on component mount
+    const savedKey = localStorage.getItem('openai_api_key');
+    if (savedKey) {
+      setOpenAIApiKey(savedKey);
     }
   }, [credentials, router]);
 
@@ -89,8 +205,40 @@ export default function Dashboard() {
     }
   };
   
+  const validateOpenAIApiKey = (key: string): boolean => {
+    if (!key) {
+      setOpenAIApiKeyError('OpenAI API Key is required');
+      return false;
+    }
+    if (!key.startsWith('sk-')) {
+      setOpenAIApiKeyError('OpenAI API Key must start with "sk-"');
+      return false;
+    }
+    setOpenAIApiKeyError('');
+    return true;
+  };
+  
+  const saveOpenAIApiKey = () => {
+    if (!validateOpenAIApiKey(openAIApiKey)) return;
+    
+    // Save to localStorage for persistence
+    localStorage.setItem('openai_api_key', openAIApiKey);
+    setOpenAIApiKeySaved(true);
+    
+    // Show success message briefly
+    setTimeout(() => {
+      setOpenAIApiKeySaved(false);
+    }, 3000);
+  };
+  
   const handleAnalyzeIssues = async () => {
     try {
+      // Check if OpenAI API key is provided
+      if (!openAIApiKey) {
+        setError('Please provide an OpenAI API key before analyzing issues');
+        return;
+      }
+      
       // Create a new suggested fix for each failed check
       const newSuggestions: SuggestedFix[] = [];
       
@@ -99,9 +247,7 @@ export default function Dashboard() {
           const id = `${checkType}-${Date.now()}`;
           newSuggestions.push({
             id,
-            check: checkType === 'mfa' ? 'Multi-Factor Authentication' : 
-                  checkType === 'rls' ? 'Row Level Security' : 
-                  checkType === 'pitr' ? 'Point in Time Recovery' : checkType,
+            check: checkType === 'mfa' ? 'MFA' : checkType === 'rls' ? 'RLS' : 'PITR',
             issue: result.message,
             suggestion: '',
             loading: true
@@ -110,31 +256,26 @@ export default function Dashboard() {
       });
       
       if (newSuggestions.length === 0) {
-        alert('No compliance issues to analyze!');
+        setError('No failed checks to analyze');
         return;
       }
       
       setSuggestedFixes(newSuggestions);
       
+      // Get detailed info from evidence logs
+      const detailedInfo = evidence
+        .filter(e => e.status === 'fail')
+        .map(e => `${e.check}: ${e.details}`)
+        .join('\n\n');
+      
       // For each suggestion, call the API with detailed context
       for (const suggestion of newSuggestions) {
         try {
-          console.log(`Analyzing ${suggestion.check} issue...`);
-          
-          // Get detailed information about the issue
-          let detailedInfo = '';
-          const checkType = suggestion.check.toLowerCase().includes('mfa') ? 'mfa' : 
-                          suggestion.check.toLowerCase().includes('rls') ? 'rls' : 
-                          suggestion.check.toLowerCase().includes('point') ? 'pitr' : '';
-          
-          if (checkType && results[checkType as keyof typeof results]?.details) {
-            detailedInfo = JSON.stringify(results[checkType as keyof typeof results].details);
-          }
-          
           const response = await fetch('/api/analyze', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              'X-OpenAI-Key': openAIApiKey // Pass the API key in a header
             },
             body: JSON.stringify({
               message: {
@@ -211,68 +352,6 @@ Please provide specific, actionable steps to fix this issue, including any code 
       [section]: !prev[section]
     }));
   };
-
-  const handleRunChecks = async () => {
-    if (!credentials) {
-      setError('No valid credentials found. Please log in again.');
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setError('');
-      
-      console.log('Creating Supabase client with credentials:', {
-        url: credentials.url,
-        serviceRoleKeyLength: credentials.serviceRoleKey?.length || 0
-      });
-      
-      const supabase = createSupabaseClient({
-        url: credentials.url,
-        serviceRoleKey: credentials.serviceRoleKey,
-      });
-
-      const createErrorResult = (e: Error): CheckResult => ({
-        status: 'error',
-        message: e.message,
-        details: {
-          message: e.message,
-          stack: e.stack || '',
-          name: e.name
-        } as JSONValue
-      });
-
-      const [mfaResult, rlsResult, pitrResult] = await Promise.all([
-        checkMFA(supabase).catch((e: Error) => createErrorResult(e)),
-        checkRLS(supabase).catch((e: Error) => createErrorResult(e)),
-        checkPITR(credentials).catch((e: Error) => createErrorResult(e)),
-      ]);
-
-      const timestamp = new Date().toISOString();
-      setEvidence(prev => [
-        ...prev,
-        { timestamp, check: 'MFA', status: mfaResult.status, details: mfaResult.message },
-        { timestamp, check: 'RLS', status: rlsResult.status, details: rlsResult.message },
-        { timestamp, check: 'PITR', status: pitrResult.status, details: pitrResult.message },
-      ]);
-      setResults({ mfa: mfaResult, rls: rlsResult, pitr: pitrResult });
-    } catch (error) {
-      console.error('Error running checks:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      setError(`Failed to run checks: ${errorMessage}`);
-      
-      // Add the error to evidence log for visibility
-      const timestamp = new Date().toISOString();
-      setEvidence(prev => [
-        ...prev,
-        { timestamp, check: 'System', status: 'error', details: `Error: ${errorMessage}` },
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-
 
   // Render functions
   const renderCheckDetails = (result: CheckResult, checkType: string) => {
@@ -389,27 +468,35 @@ Please provide specific, actionable steps to fix this issue, including any code 
             ? 'border-black text-black' 
             : 'bg-black text-white hover:bg-gray-800'}`}
         >
-          {visibleSections[key as keyof typeof visibleSections] ? 'Hide' : 'Unhide'}
+          {visibleSections[key as keyof typeof visibleSections] ? 'Hide' : 'Show'}
         </Button>
       </div>
       
       {visibleSections[key as keyof typeof visibleSections] && (
-        <>
-          <div
-            className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
-              result.status === 'pass'
-                ? 'status-pass text-green-800 border border-green-300'
-                : result.status === 'fail'
-                ? 'status-fail text-red-800 border border-red-300'
-                : result.status === 'error'
-                ? 'status-error text-orange-800 border border-orange-300'
-                : 'bg-white text-black border border-black'
-            }`}
-          >
-            Status: {result.status}
+        <div className="flex flex-row">
+          {/* Status column on the left */}
+          <div className="w-1/4 pr-4">
+            <div
+              className={`flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium w-full ${
+                result.status === 'pass'
+                  ? 'status-pass text-green-800 border border-green-300 bg-green-50'
+                  : result.status === 'fail'
+                  ? 'status-fail text-red-800 border border-red-300 bg-red-50'
+                  : result.status === 'error'
+                  ? 'status-error text-orange-800 border border-orange-300 bg-orange-50'
+                  : 'bg-white text-black border border-black'
+              }`}
+            >
+              {result.status.toUpperCase()}
+            </div>
           </div>
-          {renderCheckDetails(result, key)}
-        </>
+          
+          {/* Details column on the right */}
+          <div className="w-3/4">
+            <p className="text-sm text-black mb-2">{result.message}</p>
+            {renderCheckDetails(result, key)}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -435,20 +522,44 @@ Please provide specific, actionable steps to fix this issue, including any code 
         <h2 className="text-xl font-bold text-black">Supabase Compliance Tool</h2>
         <div className="flex items-center space-x-4">
           <div className="flex flex-col items-end">
-            <div className="flex items-center">
-              <span className="text-sm text-black mr-2"><strong>Project:</strong></span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => toggleSectionVisibility('projectInfo')}
-                className="border-black text-black hover:bg-gray-100 text-xs h-7 px-2"
-              >
-                {visibleSections.projectInfo ? 'Hide' : 'Unhide'}
-              </Button>
+            <div className="flex items-center space-x-2">
+              <div className="flex flex-col">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-black mr-2"><strong>Project URL:</strong></span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => toggleSectionVisibility('projectInfo')}
+                    className="border-black text-black hover:bg-gray-100 text-xs h-6 px-2 py-0 ml-1"
+                  >
+                    {visibleSections.projectInfo ? 'Hide' : 'Show'}
+                  </Button>
+                </div>
+                {visibleSections.projectInfo && (
+                  <span className="text-sm text-black">{credentials.url}</span>
+                )}
+              </div>
+              
+              <div className="flex flex-col">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-black mr-2"><strong>Service Role Key:</strong></span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowServiceRoleKey(!showServiceRoleKey)}
+                    className="border-black text-black hover:bg-gray-100 text-xs h-6 px-2 py-0 ml-1"
+                  >
+                    {showServiceRoleKey ? 'Hide' : 'Show'}
+                  </Button>
+                </div>
+                {showServiceRoleKey && (
+                  <span className="text-sm text-black font-mono">{credentials.serviceRoleKey}</span>
+                )}
+                {!showServiceRoleKey && credentials.serviceRoleKey && (
+                  <span className="text-sm text-black font-mono">••••••••••••••••</span>
+                )}
+              </div>
             </div>
-            {visibleSections.projectInfo && (
-              <span className="text-sm text-black">{credentials.url}</span>
-            )}
           </div>
           <Button 
             onClick={handleLogout}
@@ -466,6 +577,105 @@ Please provide specific, actionable steps to fix this issue, including any code 
           <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
         </Alert>
       )}
+      
+      {/* API Keys Input Section */}
+      <Card className="bg-white border border-black mb-6">
+        <CardHeader className="p-4 border-b border-black">
+          <h3 className="text-lg font-bold text-black">API Keys</h3>
+        </CardHeader>
+        <CardContent className="p-4">
+          {/* Management API Key Input */}
+          <div className="flex flex-col md:flex-row items-center justify-between space-y-4 md:space-y-0 md:space-x-4 mb-6">
+            <div className="w-full md:w-2/3">
+              <div className="flex flex-col space-y-1">
+                <label className="text-sm font-medium text-black">Management API Key</label>
+                <div className="flex items-center space-x-2">
+                  <Input
+                    className="w-full border-black text-black"
+                    type={showManagementApiKey ? 'text' : 'password'}
+                    value={managementApiKey}
+                    onChange={(e) => {
+                      setManagementApiKey(e.target.value);
+                      if (managementApiKeyError) validateManagementApiKey(e.target.value);
+                    }}
+                    placeholder="sbp_..."
+                  />
+                  <Button
+                    type="button"
+                    variant={showManagementApiKey ? "outline" : "default"}
+                    size="sm"
+                    className={`h-8 px-2 py-0 ${showManagementApiKey 
+                      ? 'border-black text-black' 
+                      : 'bg-black text-white hover:bg-gray-800'}`}
+                    onClick={() => setShowManagementApiKey(!showManagementApiKey)}
+                  >
+                    {showManagementApiKey ? 'Hide' : 'Show'}
+                  </Button>
+                </div>
+                {managementApiKeyError && (
+                  <p className="text-xs text-red-600 mt-1">{managementApiKeyError}</p>
+                )}
+              </div>
+            </div>
+            <Button
+              className="bg-black text-white hover:bg-gray-800 h-8 px-4 py-0"
+              onClick={saveManagementApiKey}
+              disabled={!managementApiKey || !!managementApiKeyError}
+            >
+              Save Key
+            </Button>
+          </div>
+          
+          {/* OpenAI API Key Input */}
+          <div className="flex flex-col md:flex-row items-center justify-between space-y-4 md:space-y-0 md:space-x-4">
+            <div className="w-full md:w-2/3">
+              <div className="flex flex-col space-y-1">
+                <label className="text-sm font-medium text-black">OpenAI API Key <span className="text-xs text-gray-500">(required for AI analysis)</span></label>
+                <div className="flex items-center space-x-2">
+                  <Input
+                    className="w-full border-black text-black"
+                    type={showOpenAIApiKey ? 'text' : 'password'}
+                    value={openAIApiKey}
+                    onChange={(e) => {
+                      const newValue = e.target.value;
+                      setOpenAIApiKey(newValue);
+                      // Only validate if there was a previous error
+                      if (openAIApiKeyError) validateOpenAIApiKey(newValue);
+                    }}
+                    placeholder="sk-..."
+                  />
+                  <Button
+                    type="button"
+                    variant={showOpenAIApiKey ? "outline" : "default"}
+                    size="sm"
+                    className={`h-8 px-2 py-0 ${showOpenAIApiKey 
+                      ? 'border-black text-black' 
+                      : 'bg-black text-white hover:bg-gray-800'}`}
+                    onClick={() => setShowOpenAIApiKey(!showOpenAIApiKey)}
+                  >
+                    {showOpenAIApiKey ? 'Hide' : 'Show'}
+                  </Button>
+                </div>
+                {openAIApiKeyError && (
+                  <p className="text-xs text-red-600 mt-1">{openAIApiKeyError}</p>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center">
+              <Button
+                className="bg-black text-white hover:bg-gray-800 h-8 px-4 py-0"
+                onClick={saveOpenAIApiKey}
+                disabled={!openAIApiKey || !!openAIApiKeyError}
+              >
+                Save Key
+              </Button>
+              {openAIApiKeySaved && (
+                <span className="ml-2 text-xs text-green-600">Key saved successfully!</span>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="flex flex-col md:flex-row gap-6">
         {/* Left column - Compliance Checks */}

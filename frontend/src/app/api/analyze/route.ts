@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import OpenAI from 'openai';
+import OpenAI from 'openai/index.mjs';
 
 export async function POST(request: Request) {
   try {
@@ -13,12 +13,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // Get API key from environment
-    const apiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY;
+    // Get API key from request header or environment
+    const headerApiKey = request.headers.get('X-OpenAI-Key');
+    const envApiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY;
+    const apiKey = headerApiKey || envApiKey;
     
     if (!apiKey) {
       return NextResponse.json(
-        { error: 'OpenAI API key is not configured' },
+        { error: 'OpenAI API key is not provided in header or configured in environment' },
         { status: 500 }
       );
     }
