@@ -45,6 +45,15 @@ export interface CheckResult {
 /**
  * Evidence entry structure for the evidence log
  */
+/**
+ * Result of RLS check for a single table
+ */
+export interface RlsCheckResult {
+  table: string;
+  rlsDisabled: boolean;
+  errorMessage?: string;
+}
+
 export interface EvidenceEntry {
   timestamp: string;
   check: string;

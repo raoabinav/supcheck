@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 const { useState, useEffect } = React;
 import { CheckResult, DetailedCheckResult, EvidenceEntry, SuggestedFix } from '@/types';
 import { createSupabaseClient } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
+import { extractProjectRef } from '@/lib/checks';
 import { useCredentials } from '@/context/CredentialsContext';
 import { 
   checkMFA, 
@@ -58,6 +60,10 @@ export default function Dashboard() {
     pitr: "Point in Time Recovery allows you to restore your database to any point in time within the retention period, protecting against accidental data loss."
   };
   const [suggestedFixes, setSuggestedFixes] = useState<SuggestedFix[]>([]);
+  
+  // Custom tables for RLS check
+  const [useCustomTables, setUseCustomTables] = useState(false);
+  const [customTables, setCustomTables] = useState('');
   
   // Section visibility states
   const [visibleSections, setVisibleSections] = useState({
@@ -145,10 +151,58 @@ export default function Dashboard() {
         } as JSONValue
       });
 
+      // Process custom tables - this is now the primary method for RLS checks
+      let customTablesList: string[] | undefined;
+      if (customTables.trim()) {
+        customTablesList = customTables
+          .split(',')
+          .map(table => table.trim())
+          .filter(table => table.length > 0);
+        
+        if (customTablesList && customTablesList.length > 0) {
+          // Add to evidence log
+          const timestamp = new Date().toISOString();
+          setEvidence(prev => [
+            ...prev,
+            { 
+              timestamp, 
+              check: 'RLS', 
+              status: 'info', 
+              details: `Using custom tables for RLS check: ${customTablesList?.join(', ') || ''}` 
+            },
+          ]);
+        } else {
+          // No valid tables in the input
+          const timestamp = new Date().toISOString();
+          setEvidence(prev => [
+            ...prev,
+            { 
+              timestamp, 
+              check: 'RLS', 
+              status: 'warning', 
+              details: `No valid table names found in custom tables input. Please enter comma-separated table names.` 
+            },
+          ]);
+          customTablesList = undefined;
+        }
+      } else {
+        // No custom tables provided
+        const timestamp = new Date().toISOString();
+        setEvidence(prev => [
+          ...prev,
+          { 
+            timestamp, 
+            check: 'RLS', 
+            status: 'warning', 
+            details: `No custom tables provided. Please specify tables to check for RLS.` 
+          },
+        ]);
+      }
+      
       const [mfaResult, rlsResult, pitrResult] = await Promise.all([
         checkMFA(supabase).catch((e: Error) => createErrorResult(e)),
-        checkRLS(supabase).catch((e: Error) => createErrorResult(e)),
-        checkPITR(supabaseCredentials).catch((e: Error) => createErrorResult(e)),
+        checkRLS(supabase, managementApiKey, customTablesList).catch((e: Error) => createErrorResult(e)),
+        checkPITR(supabaseCredentials).catch((e: Error) => createErrorResult(e))
       ]);
 
       const timestamp = new Date().toISOString();
@@ -229,6 +283,174 @@ export default function Dashboard() {
     setTimeout(() => {
       setOpenAIApiKeySaved(false);
     }, 3000);
+  };
+  
+  /**
+   * Updates the TABLES_WITH_PII constant in constants.ts with tables from the database
+   */
+  const handleUpdateTablesList = async () => {
+    if (!credentials) {
+      setError('No valid credentials found. Please log in again.');
+      return;
+    }
+    
+    try {
+      setLoading(true);
+      setError('');
+      
+      // Add to evidence log
+      const timestamp = new Date().toISOString();
+      setEvidence(prev => [
+        ...prev,
+        { 
+          timestamp, 
+          check: 'RLS', 
+          status: 'info', 
+          details: 'Updating tables list for RLS check...' 
+        },
+      ]);
+      
+      // Extract URL and service role key from credentials
+      const url = credentials.url;
+      const serviceRoleKey = credentials.serviceRoleKey;
+      
+      const projectRef = extractProjectRef(url);
+      if (!projectRef) {
+        throw new Error('Invalid Supabase URL. Unable to extract project reference.');
+      }
+      
+      // Create a new Supabase client with the extracted project reference
+      const directClient = createClient(
+        `https://${projectRef}.supabase.co`,
+        serviceRoleKey
+      );
+      
+      // Try multiple methods to get tables
+      let tableNames: string[] = [];
+      
+      // Method 1: Try using RPC function if available
+      try {
+        const { data, error } = await directClient.rpc('get_tables', {});
+        if (!error && data && Array.isArray(data) && data.length > 0) {
+          tableNames = data;
+          console.log(`Found ${tableNames.length} tables using RPC:`, tableNames);
+        } else if (error) {
+          console.warn('RPC get_tables not available:', error);
+        }
+      } catch (rpcError) {
+        console.warn('Error using RPC get_tables:', rpcError);
+      }
+      
+      // Method 2: Try information_schema if RPC failed
+      if (tableNames.length === 0) {
+        try {
+          console.log('Trying information_schema.tables...');
+          const { data: tables, error: tablesError } = await directClient
+            .from('information_schema.tables')
+            .select('table_name')
+            .eq('table_schema', 'public')
+            .eq('table_type', 'BASE TABLE');
+
+          if (!tablesError && tables && tables.length > 0) {
+            tableNames = tables.map((row: { table_name: string }) => row.table_name);
+            console.log(`Found ${tableNames.length} tables from information_schema:`, tableNames);
+          } else if (tablesError) {
+            console.warn('Error using information_schema:', tablesError);
+          }
+        } catch (schemaError) {
+          console.warn('Exception querying information_schema:', schemaError);
+        }
+      }
+      
+      // Method 3: Fallback to querying specific tables directly
+      if (tableNames.length === 0) {
+        try {
+          console.log('Trying direct table queries...');
+          // Import the constant directly to avoid circular dependencies
+          const { TABLES_WITH_PII } = await import('../lib/rls_logic/constants');
+          
+          // Try to query each table to see if it exists
+          const existingTables = [];
+          for (const tableName of TABLES_WITH_PII) {
+            try {
+              const { error } = await directClient
+                .from(tableName)
+                .select('*', { head: true });
+              
+              if (!error) {
+                existingTables.push(tableName);
+              }
+            } catch {
+              // Table doesn't exist or can't be queried
+            }
+          }
+          
+          if (existingTables.length > 0) {
+            tableNames = existingTables;
+            console.log(`Found ${tableNames.length} existing tables by direct query:`, tableNames);
+          }
+        } catch (fallbackError) {
+          console.warn('Error in fallback table detection:', fallbackError);
+        }
+      }
+      
+      if (tableNames.length === 0) {
+        const timestamp = new Date().toISOString();
+        setEvidence(prev => [
+          ...prev,
+          { 
+            timestamp, 
+            check: 'RLS', 
+            status: 'error', 
+            details: 'Failed to find any tables in the database' 
+          },
+        ]);
+        return;
+      }
+      
+      // Log the updated tables list
+      const newTimestamp = new Date().toISOString();
+      setEvidence(prev => [
+        ...prev,
+        { 
+          timestamp: newTimestamp, 
+          check: 'RLS', 
+          status: 'info', 
+          details: `Updated tables list: ${tableNames.join(', ')}` 
+        },
+      ]);
+      
+      // In a real implementation, this would update the constants.ts file
+      // For now, we just log the intended changes
+      setEvidence(prev => [
+        ...prev,
+        { 
+          timestamp: newTimestamp, 
+          check: 'RLS', 
+          status: 'info', 
+          details: `Would update TABLES_WITH_PII in constants.ts with: ${tableNames.join(', ')}` 
+        },
+      ]);
+      
+      // Update the custom tables input field with the found tables
+      setCustomTables(tableNames.join(', '));
+      setUseCustomTables(true);
+      
+    } catch (error) {
+      console.error('Failed to update tables list:', error);
+      const timestamp = new Date().toISOString();
+      setEvidence(prev => [
+        ...prev,
+        { 
+          timestamp, 
+          check: 'RLS', 
+          status: 'error', 
+          details: `Failed to update tables list: ${error instanceof Error ? error.message : String(error)}` 
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
   };
   
   const handleAnalyzeIssues = async () => {
@@ -375,12 +597,11 @@ Please provide specific, actionable steps to fix this issue, including any code 
     const renderEntityList = () => {
       if (!result.details) return null;
       
-      // Cast the details to DetailedCheckResult to access the properties
-      const details = result.details as DetailedCheckResult;
-      
       switch (checkType) {
         case 'mfa':
           const users = result.details as Array<{ email: string; mfaEnabled: boolean }>;
+          if (!users || users.length === 0) return null;
+          
           return (
             <div className="mt-4 border border-gray-200 rounded-md p-2 bg-white">
               <h4 className="font-medium mb-2 text-black">User MFA Status ({users.length} users)</h4>
@@ -395,7 +616,7 @@ Please provide specific, actionable steps to fix this issue, including any code 
                   <tbody>
                     {users.map((user, index) => (
                       <tr key={index} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                        <td className="p-2">{user.email || 'Unknown User'}</td>
+                        <td className="p-2">{user.email || 'Unknown'}</td>
                         <td className="p-2">
                           <span className={`px-2 py-1 rounded-full text-xs ${user.mfaEnabled ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
                             {user.mfaEnabled ? 'Enabled' : 'Disabled'}
@@ -403,34 +624,64 @@ Please provide specific, actionable steps to fix this issue, including any code 
                         </td>
                       </tr>
                     ))}
-                    {users.length === 0 && (
-                      <tr>
-                        <td colSpan={2} className="p-2 text-center text-gray-500">No users found</td>
-                      </tr>
-                    )}
                   </tbody>
                 </table>
               </div>
             </div>
           );
+          
         case 'rls':
-          return details.tables ? (
-            <EntityList 
-              entities={details.tables} 
-              entityType="tables" 
-              statusField="status" 
-              nameField="tableName" 
-            />
-          ) : null;
+          // Check if table_results exists in the details
+          const details = result.details as JSONValue;
+          if (details && typeof details === 'object' && 'table_results' in details) {
+            const tableResults = details.table_results as Array<{ table: string; rlsEnabled: boolean; error: string | null }>;
+            if (!tableResults || tableResults.length === 0) return null;
+            
+            return (
+              <div className="mt-4 border border-gray-200 rounded-md p-2 bg-white">
+                <h4 className="font-medium mb-2 text-black">Table RLS Status ({tableResults.length} tables)</h4>
+                <div className="overflow-auto max-h-60">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50">
+                        <th className="text-left p-2">Table Name</th>
+                        <th className="text-left p-2">RLS Status</th>
+                        <th className="text-left p-2">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tableResults.map((tableResult, index) => (
+                        <tr key={index} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                          <td className="p-2 font-mono text-xs">{tableResult.table}</td>
+                          <td className="p-2">
+                            <span className={`px-2 py-1 rounded-full text-xs ${tableResult.rlsEnabled ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                              {tableResult.rlsEnabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                          </td>
+                          <td className="p-2 text-xs text-gray-600">
+                            {tableResult.error ? `Error: ${tableResult.error}` : ''}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          }
+          return null;
+          
         case 'pitr':
-          return details.projects ? (
+          const pitrDetails = result.details as DetailedCheckResult;
+          return pitrDetails.projects ? (
             <EntityList 
-              entities={details.projects} 
+              entities={pitrDetails.projects} 
               entityType="projects" 
               statusField="status" 
               nameField="projectName" 
             />
           ) : null;
+          
         default:
           return null;
       }
@@ -452,7 +703,19 @@ Please provide specific, actionable steps to fix this issue, including any code 
         <div className="flex items-center">
           <h3 className="text-lg font-bold text-black">
             {key === 'mfa' && 'Multi-Factor Authentication (MFA)'}
-            {key === 'rls' && 'Row Level Security (RLS)'}
+            {key === 'rls' && (
+              <div className="flex items-center">
+                <span>Row Level Security (RLS)</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleUpdateTablesList}
+                  className="ml-2 h-6 px-2 py-0 text-xs border-black text-black hover:bg-gray-100"
+                >
+                  Update Tables List
+                </Button>
+              </div>
+            )}
             {key === 'pitr' && 'Point in Time Recovery (PITR)'}
           </h3>
           <div className="tooltip ml-2">
@@ -473,30 +736,61 @@ Please provide specific, actionable steps to fix this issue, including any code 
       </div>
       
       {visibleSections[key as keyof typeof visibleSections] && (
-        <div className="flex flex-row">
-          {/* Status column on the left */}
-          <div className="w-1/4 pr-4">
-            <div
-              className={`flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium w-full ${
-                result.status === 'pass'
-                  ? 'status-pass text-green-800 border border-green-300 bg-green-50'
-                  : result.status === 'fail'
-                  ? 'status-fail text-red-800 border border-red-300 bg-red-50'
-                  : result.status === 'error'
-                  ? 'status-error text-orange-800 border border-orange-300 bg-orange-50'
-                  : 'bg-white text-black border border-black'
-              }`}
-            >
-              {result.status.toUpperCase()}
+        <>
+          {key === 'rls' && (
+            <div className="mb-3 border border-gray-200 rounded-md p-3 bg-gray-50">
+              <div className="flex items-center mb-2">
+                <input
+                  type="checkbox"
+                  id="useCustomTables"
+                  checked={useCustomTables}
+                  onChange={(e) => setUseCustomTables(e.target.checked)}
+                  className="mr-2"
+                />
+                <label htmlFor="useCustomTables" className="text-sm font-medium text-black">
+                  Use custom tables for RLS check
+                </label>
+              </div>
+              {useCustomTables && (
+                <div className="flex flex-col space-y-2">
+                  <textarea
+                    value={customTables}
+                    onChange={(e) => setCustomTables(e.target.value)}
+                    placeholder="Enter table names separated by commas (e.g., users, profiles, orders)"
+                    className="w-full p-2 border border-gray-300 rounded text-sm text-black"
+                    rows={3}
+                  />
+                  <div className="text-xs text-gray-500">
+                    These tables will be checked instead of the default list. Enter table names separated by commas.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="flex flex-row">
+            {/* Status column on the left */}
+            <div className="w-1/4 pr-4">
+              <div
+                className={`flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium w-full ${
+                  result.status === 'pass'
+                    ? 'status-pass text-green-800 border border-green-300 bg-green-50'
+                    : result.status === 'fail'
+                    ? 'status-fail text-red-800 border border-red-300 bg-red-50'
+                    : result.status === 'error'
+                    ? 'status-error text-orange-800 border border-orange-300 bg-orange-50'
+                    : 'bg-white text-black border border-black'
+                }`}
+              >
+                {result.status.toUpperCase()}
+              </div>
+            </div>
+            
+            {/* Details column on the right */}
+            <div className="w-3/4">
+              {renderCheckDetails(result, key)}
             </div>
           </div>
-          
-          {/* Details column on the right */}
-          <div className="w-3/4">
-            <p className="text-sm text-black mb-2">{result.message}</p>
-            {renderCheckDetails(result, key)}
-          </div>
-        </div>
+        </>
       )}
     </div>
   );

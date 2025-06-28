@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import OpenAI from 'openai/index.mjs';
+import OpenAI from 'openai';
 
 export async function POST(request: Request) {
   try {

@@ -163,7 +163,7 @@ export default function ComplianceChecker() {
 
       const [mfaResult, rlsResult, pitrResult] = await Promise.all([
         checkMFA(supabase).catch((e: Error) => createErrorResult(e)),
-        checkRLS(supabase).catch((e: Error) => createErrorResult(e)),
+        checkRLS(supabase, credentials.managementApiKey).catch((e: Error) => createErrorResult(e)),
         checkPITR({ ...credentials }).catch((e: Error) => createErrorResult(e)),
       ]);
 
