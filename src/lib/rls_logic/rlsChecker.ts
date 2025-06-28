@@ -33,7 +33,8 @@ export async function checkRls(supabaseKey: string): Promise<RlsCheckResult[]> {
     const result = decodeJwtAndGetProjectRef(supabaseKey);
     payload = result.payload;
     projectRef = result.projectRef;
-  } catch (e) {
+  } catch (error) {
+    console.error('JWT Decode Error:', error);
     throw new Error('Invalid Supabase API Key');
   }
 

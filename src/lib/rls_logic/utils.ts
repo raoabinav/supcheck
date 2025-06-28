@@ -5,7 +5,7 @@ export interface JwtPayload {
   exp: number;
   sub?: string;
   iss?: string;
-  [key: string]: any;
+  [key: string]: string | number | boolean | undefined;
 }
 
 /**
@@ -25,7 +25,8 @@ export function decodeJwtAndGetProjectRef(apiKey: string): { projectRef: string;
     }
 
     return { projectRef, payload };
-  } catch (e) {
+  } catch (error) {
+    console.error('JWT Decode Error:', error);
     throw new Error('Invalid Supabase API Key');
   }
 }
