@@ -598,7 +598,7 @@ Please provide specific, actionable steps to fix this issue, including any code 
       if (!result.details) return null;
       
       switch (checkType) {
-        case 'mfa':
+        case 'mfa': {
           const users = result.details as Array<{ email: string; mfaEnabled: boolean }>;
           if (!users || users.length === 0) return null;
           
@@ -629,8 +629,9 @@ Please provide specific, actionable steps to fix this issue, including any code 
               </div>
             </div>
           );
+        }
           
-        case 'rls':
+        case 'rls': {
           // Check if table_results exists in the details
           const details = result.details as JSONValue;
           if (details && typeof details === 'object' && 'table_results' in details) {
@@ -670,8 +671,9 @@ Please provide specific, actionable steps to fix this issue, including any code 
             );
           }
           return null;
+        }
           
-        case 'pitr':
+        case 'pitr': {
           const pitrDetails = result.details as DetailedCheckResult;
           return pitrDetails.projects ? (
             <EntityList 
@@ -681,6 +683,7 @@ Please provide specific, actionable steps to fix this issue, including any code 
               nameField="projectName" 
             />
           ) : null;
+        }
           
         default:
           return null;
