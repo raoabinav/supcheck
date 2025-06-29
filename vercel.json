@@ -9,8 +9,7 @@
   "build": {
     "env": {
       "NODE_ENV": "production"
-    },
-    "output": ".next"
+    }
   },
   "routes": [
     {
