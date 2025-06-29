@@ -9,12 +9,19 @@
   "build": {
     "env": {
       "NODE_ENV": "production"
-    }
+    },
+    "output": ".next"
   },
   "routes": [
     {
       "src": "/(.*)",
       "dest": "/$1"
     }
+  ],
+  "env": {
+    "NODE_VERSION": "20.x"
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/" }
   ]
 }
